@@ -30,7 +30,7 @@ func New(opts ...Option) (*Server, error) {
 	}
 
 	baseLogger := o.logger.Named("server")
-	broker := NewBroker(o.cfg, baseLogger.Named("broker"))
+	broker := NewBroker(o.cfg, baseLogger.Named("broker"), o.stores)
 	listener := NewListener(o.cfg.ListenAddr, broker, baseLogger.Named("listener"))
 	return &Server{
 		cfg:      o.cfg,

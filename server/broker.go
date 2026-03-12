@@ -6,6 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jsirianni/mqtt/storage/contracts"
+	memstore "github.com/jsirianni/mqtt/storage/memory"
 	"go.uber.org/zap"
 )
 
@@ -17,22 +19,61 @@ type Delivery struct {
 
 // Broker holds shared in-memory state.
 type Broker struct {
-	mu             sync.RWMutex
-	cfg            Config
-	sessions       map[string]*Session
-	retained       map[string]*RetainedMessage
-	generatedIDCtr uint64
-	logger         *zap.Logger
+	mu     sync.RWMutex
+	cfg    Config
+	stores contracts.BrokerStores
+	logger *zap.Logger
 }
 
 // NewBroker creates a broker with the given config.
-func NewBroker(cfg Config, logger *zap.Logger) *Broker {
-	return &Broker{
-		cfg:      cfg,
-		sessions: make(map[string]*Session),
-		retained: make(map[string]*RetainedMessage),
-		logger:   logger,
+func NewBroker(cfg Config, logger *zap.Logger, stores contracts.BrokerStores) *Broker {
+	mem := memstore.NewStores()
+	if stores.Sessions == nil {
+		stores.Sessions = mem
 	}
+	if stores.Retained == nil {
+		stores.Retained = mem
+	}
+	if stores.Delivery == nil {
+		stores.Delivery = mem
+	}
+
+	return &Broker{
+		cfg:    cfg,
+		stores: stores,
+		logger: logger,
+	}
+}
+
+func asSession(v any) *Session {
+	sess, _ := v.(*Session)
+	return sess
+}
+
+func asSubscription(v any) *Subscription {
+	sub, _ := v.(*Subscription)
+	return sub
+}
+
+func asRetainedMessage(v any) *RetainedMessage {
+	rm, _ := v.(*RetainedMessage)
+	return rm
+}
+
+func asPublishMessage(v any) *PublishMessage {
+	msg, _ := v.(*PublishMessage)
+	return msg
+}
+
+func (b *Broker) canSendMore(clientID string, sess *Session) bool {
+	if sess == nil {
+		return false
+	}
+	count, err := b.stores.Delivery.InflightCount(clientID)
+	if err != nil {
+		return false
+	}
+	return count < int(sess.ClientReceiveMaximum)
 }
 
 // HandleConnect processes CONNECT and returns CONNACK or error.
@@ -43,13 +84,15 @@ func (b *Broker) HandleConnect(c *Conn, pkt *ConnectPacket) (*ConnackPacket, err
 	clientID := pkt.ClientID
 	assigned := false
 	if clientID == "" {
-		b.generatedIDCtr++
-		clientID = fmt.Sprintf("gen-%d", b.generatedIDCtr)
+		clientID = fmt.Sprintf("gen-%d", b.stores.Sessions.NextGeneratedClientID())
 		assigned = true
 	}
 
 	sessionPresent := false
-	existing := b.sessions[clientID]
+	existing := asSession(func() any {
+		v, _ := b.stores.Sessions.GetSession(clientID)
+		return v
+	}())
 
 	if pkt.CleanSession {
 		if existing != nil {
@@ -70,7 +113,7 @@ func (b *Broker) HandleConnect(c *Conn, pkt *ConnectPacket) (*ConnackPacket, err
 		}
 	} else {
 		sess = NewSession(clientID)
-		b.sessions[clientID] = sess
+		b.stores.Sessions.UpsertSession(clientID, sess)
 	}
 
 	// MQTT 3.1.1 uses Clean Session semantics.
@@ -135,7 +178,7 @@ func pktToPublishMessage(topic string, payload []byte, qos byte, retain bool, pr
 
 // removeSessionLocked removes session from broker and publishes will if ungraceful. Call with b.mu held.
 func (b *Broker) removeSessionLocked(sess *Session, publishWill bool) {
-	delete(b.sessions, sess.ClientID)
+	b.stores.Sessions.DeleteSession(sess.ClientID)
 	if publishWill && sess.Will != nil {
 		b.publishWillLocked(sess.Will)
 	}
@@ -149,9 +192,13 @@ func (b *Broker) publishWillLocked(will *WillMessage) {
 
 // routeLocked distributes msg to matching sessions. Call with b.mu held. skipSession optionally skips one (e.g. no-local).
 func (b *Broker) routeLocked(msg *PublishMessage, skipSession *Session) {
-	for _, sess := range b.sessions {
+	b.stores.Sessions.ForEachSession(func(_ string, raw any) bool {
+		sess := asSession(raw)
+		if sess == nil {
+			return true
+		}
 		if sess == skipSession {
-			continue
+			return true
 		}
 		for _, sub := range sess.Subs {
 			if !MatchTopic(sub.Filter, msg.Topic) {
@@ -172,7 +219,8 @@ func (b *Broker) routeLocked(msg *PublishMessage, skipSession *Session) {
 				b.sendDeliveryLocked(delivery)
 			}
 		}
-	}
+		return true
+	})
 }
 
 // makeDelivery creates one delivery for a session or nil. retainFlag: use RetainAsPublished for forwarded retain.
@@ -184,19 +232,20 @@ func (b *Broker) makeDelivery(sess *Session, msg *PublishMessage, grantedQoS byt
 			return &Delivery{Target: sess, Packet: pkt}
 		}
 		// QoS 1: allocate packet ID and track inflight
-		pid := sess.NextPacketID
-		sess.NextPacketID++
-		if sess.NextPacketID == 0 {
-			sess.NextPacketID++
+		pid, err := b.stores.Delivery.ReservePacketID(sess.ClientID)
+		if err != nil {
+			return nil
 		}
 		pkt.PacketID = pid
 		pkt.Dup = false
-		sess.InflightOutbound[pid] = &InflightPublish{PacketID: pid, Message: msg}
+		if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, msg); err != nil {
+			return nil
+		}
 		return &Delivery{Target: sess, Packet: pkt}
 	}
 	// Offline: queue QoS 1 only
 	if grantedQoS == 1 {
-		sess.PendingQueue = append(sess.PendingQueue, msg)
+		_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
 	}
 	return nil
 }
@@ -210,10 +259,8 @@ func (b *Broker) sendDeliveryLocked(d *Delivery) {
 	default:
 		// Queue full; could add to session pending (v1: drop or queue)
 		if pub, ok := d.Packet.(*PublishPacket); ok && pub.QoS == 1 {
-			if _, ok := d.Target.InflightOutbound[pub.PacketID]; ok {
-				delete(d.Target.InflightOutbound, pub.PacketID)
-			}
-			d.Target.PendingQueue = append(d.Target.PendingQueue, packetToMessage(pub))
+			_ = b.stores.Delivery.RemoveInflight(d.Target.ClientID, pub.PacketID)
+			_ = b.stores.Delivery.EnqueuePending(d.Target.ClientID, packetToMessage(pub))
 		}
 	}
 }
@@ -286,9 +333,9 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 	// Retained
 	if pkt.Retain {
 		if len(pkt.Payload) == 0 {
-			delete(b.retained, pkt.Topic)
+			b.stores.Retained.DeleteRetained(pkt.Topic)
 		} else {
-			b.retained[pkt.Topic] = &RetainedMessage{Msg: msg}
+			b.stores.Retained.SetRetained(pkt.Topic, &RetainedMessage{Msg: msg})
 		}
 	}
 
@@ -296,7 +343,11 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 	var deliveries []Delivery
 	matchedSubscriptions := 0
 	offlineQueued := 0
-	for _, sess := range b.sessions {
+	b.stores.Sessions.ForEachSession(func(_ string, raw any) bool {
+		sess := asSession(raw)
+		if sess == nil {
+			return true
+		}
 		for _, sub := range sess.Subs {
 			if !MatchTopic(sub.Filter, msg.Topic) {
 				continue
@@ -318,26 +369,28 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 				if grantedQoS == 0 {
 					deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 				} else {
-					if !sess.CanSendMore() {
-						sess.PendingQueue = append(sess.PendingQueue, msg)
+					if !b.canSendMore(sess.ClientID, sess) {
+						_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
 						offlineQueued++
 						continue
 					}
-					pid := sess.NextPacketID
-					sess.NextPacketID++
-					if sess.NextPacketID == 0 {
-						sess.NextPacketID++
+					pid, err := b.stores.Delivery.ReservePacketID(sess.ClientID)
+					if err != nil {
+						continue
 					}
 					p.PacketID = pid
-					sess.InflightOutbound[pid] = &InflightPublish{PacketID: pid, Message: msg}
+					if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, msg); err != nil {
+						continue
+					}
 					deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 				}
 			} else if grantedQoS == 1 {
-				sess.PendingQueue = append(sess.PendingQueue, msg)
+				_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
 				offlineQueued++
 			}
 		}
-	}
+		return true
+	})
 
 	var puback *PubackPacket
 	if pkt.QoS == 1 {
@@ -362,7 +415,7 @@ func (b *Broker) HandlePuback(c *Conn, pkt *PubackPacket) error {
 	if sess == nil {
 		return nil
 	}
-	delete(sess.InflightOutbound, pkt.PacketID)
+	_ = b.stores.Delivery.RemoveInflight(sess.ClientID, pkt.PacketID)
 	// Drain pending queue into outbound
 	b.drainPendingLocked(sess)
 	return nil
@@ -370,25 +423,32 @@ func (b *Broker) HandlePuback(c *Conn, pkt *PubackPacket) error {
 
 // drainPendingLocked sends queued QoS1 messages to session if conn is set and receive max allows. Call with b.mu held.
 func (b *Broker) drainPendingLocked(sess *Session) {
-	if sess.Conn == nil || len(sess.PendingQueue) == 0 {
+	if sess == nil || sess.Conn == nil {
 		return
 	}
-	for len(sess.PendingQueue) > 0 && sess.CanSendMore() {
-		msg := sess.PendingQueue[0]
-		sess.PendingQueue = sess.PendingQueue[1:]
-		pid := sess.NextPacketID
-		sess.NextPacketID++
-		if sess.NextPacketID == 0 {
-			sess.NextPacketID++
+	for b.canSendMore(sess.ClientID, sess) {
+		raw, ok, err := b.stores.Delivery.DequeuePending(sess.ClientID)
+		if err != nil || !ok {
+			return
+		}
+		msg := asPublishMessage(raw)
+		if msg == nil {
+			continue
+		}
+		pid, err := b.stores.Delivery.ReservePacketID(sess.ClientID)
+		if err != nil {
+			return
 		}
 		p := messageToPublishPacket(msg, 1, msg.Retain)
 		p.PacketID = pid
 		p.Dup = true
-		sess.InflightOutbound[pid] = &InflightPublish{PacketID: pid, Message: msg}
+		if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, msg); err != nil {
+			return
+		}
 		select {
 		case sess.Conn.outbound <- p:
 		default:
-			sess.PendingQueue = append([]*PublishMessage{msg}, sess.PendingQueue...)
+			_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
 			return
 		}
 	}
@@ -429,6 +489,10 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 			RetainHandling:    f.RetainHandling,
 		}
 		existing := sess.Subs[f.Filter]
+		if err := b.stores.Sessions.UpsertSubscription(sess.ClientID, sub.Filter, sub); err != nil {
+			reasonCodes[i] = ReasonUnspecifiedError
+			continue
+		}
 		sess.Subs[f.Filter] = sub
 
 		// Retained: per Retain Handling
@@ -442,12 +506,16 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 			sendRetained = false
 		}
 		if sendRetained {
-			for topic, rm := range b.retained {
+			b.stores.Retained.ForEachRetained(func(topic string, raw any) bool {
+				rm := asRetainedMessage(raw)
+				if rm == nil {
+					return true
+				}
 				if !MatchTopic(f.Filter, topic) {
-					continue
+					return true
 				}
 				if rm.Msg == nil {
-					continue
+					return true
 				}
 				gq := grantedQoS
 				if rm.Msg.QoS < gq {
@@ -460,21 +528,23 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 					if gq == 0 {
 						deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 					} else {
-						if !sess.CanSendMore() {
-							sess.PendingQueue = append(sess.PendingQueue, rm.Msg)
-							continue
+						if !b.canSendMore(sess.ClientID, sess) {
+							_ = b.stores.Delivery.EnqueuePending(sess.ClientID, rm.Msg)
+							return true
 						}
-						pid := sess.NextPacketID
-						sess.NextPacketID++
-						if sess.NextPacketID == 0 {
-							sess.NextPacketID++
+						pid, err := b.stores.Delivery.ReservePacketID(sess.ClientID)
+						if err != nil {
+							return true
 						}
 						p.PacketID = pid
-						sess.InflightOutbound[pid] = &InflightPublish{PacketID: pid, Message: rm.Msg}
+						if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, rm.Msg); err != nil {
+							return true
+						}
 						deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 					}
 				}
-			}
+				return true
+			})
 		}
 	}
 
@@ -492,6 +562,7 @@ func (b *Broker) HandleUnsubscribe(c *Conn, pkt *UnsubscribePacket) (*UnsubackPa
 	}
 	reasonCodes := make([]byte, len(pkt.Filters))
 	for i, filter := range pkt.Filters {
+		_ = b.stores.Sessions.DeleteSubscription(sess.ClientID, filter)
 		delete(sess.Subs, filter)
 		reasonCodes[i] = ReasonSuccess
 	}

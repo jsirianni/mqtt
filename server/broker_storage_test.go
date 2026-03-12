@@ -8,7 +8,7 @@ import (
 )
 
 func newTestBroker() *Broker {
-	return NewBroker(defaultConfig(), zap.NewNop(), contracts.BrokerStores{})
+	return NewBroker(defaultConfig(), zap.NewNop(), contracts.BrokerStores{}, NewNoopMetricsCollector())
 }
 
 func newTestConn() *Conn {

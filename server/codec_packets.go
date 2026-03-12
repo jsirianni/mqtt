@@ -8,21 +8,25 @@ import (
 const mqttProtocolName = "MQTT"
 const mqttProtocolLevel = 4 // MQTT 3.1.1
 
-func readFixedHeader(r io.Reader, maxSize uint32) (packetType byte, flags byte, remaining uint32, err error) {
+func readFixedHeader(r io.Reader, maxSize uint32) (packetType byte, flags byte, remaining uint32, fixedHeaderBytes uint32, err error) {
 	b, err := readByte(r)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	packetType = b >> 4
 	flags = b & 0x0F
-	remaining, _, err = decodeRemainingLength(r)
+	remaining, rlBytes, err := decodeRemainingLength(r)
 	if err != nil {
-		return 0, 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	if remaining > maxSize {
-		return 0, 0, 0, ErrPacketTooLarge
+		return 0, 0, 0, 0, ErrPacketTooLarge
 	}
-	return packetType, flags, remaining, nil
+	fixedHeaderBytes, err = checkedUint32(1 + rlBytes)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return packetType, flags, remaining, fixedHeaderBytes, nil
 }
 
 // ReadConnect reads an MQTT 3.1.1 CONNECT packet.
@@ -354,7 +358,7 @@ func WriteDisconnect(w io.Writer, _ *DisconnectPacket) error {
 
 // ReadPacket reads one MQTT packet from r. maxPacketSize caps remaining length.
 func ReadPacket(r io.Reader, maxPacketSize uint32) (interface{}, uint32, error) {
-	pt, flags, remaining, err := readFixedHeader(r, maxPacketSize)
+	pt, flags, remaining, fixedHeaderBytes, err := readFixedHeader(r, maxPacketSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -370,7 +374,7 @@ func ReadPacket(r io.Reader, maxPacketSize uint32) (interface{}, uint32, error) 
 		}
 	}
 
-	totalLen := remaining
+	totalLen := fixedHeaderBytes + remaining
 	rest := int(remaining)
 	if rest == 0 {
 		switch pt {

@@ -1,0 +1,10 @@
+---
+description: Refer to central AI quality gate policy
+alwaysApply: true
+---
+
+# Quality Gates
+
+Canonical policy is defined in `docs/development/AGENTS.md`.
+
+Apply those instructions for every code change in this repository.

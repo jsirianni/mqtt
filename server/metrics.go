@@ -362,6 +362,7 @@ func NewOTelMetricsCollector(meter metric.Meter) (*OTelMetricsCollector, error) 
 	return c, nil
 }
 
+// SetListenerUp records listener availability as a binary gauge.
 func (c *OTelMetricsCollector) SetListenerUp(up bool) {
 	if up {
 		c.listenerUp.Store(1)
@@ -370,38 +371,47 @@ func (c *OTelMetricsCollector) SetListenerUp(up bool) {
 	c.listenerUp.Store(0)
 }
 
+// IncListenerError increments the listener error counter.
 func (c *OTelMetricsCollector) IncListenerError() {
 	c.listenerErrors.Add(context.Background(), 1)
 }
 
+// IncConnectionsAccepted increments accepted connection count.
 func (c *OTelMetricsCollector) IncConnectionsAccepted() {
 	c.connectionsAccepted.Add(context.Background(), 1)
 }
 
+// AddConnectionsActive adjusts the active connections gauge by delta.
 func (c *OTelMetricsCollector) AddConnectionsActive(delta int64) {
 	c.connectionsActive.Add(context.Background(), delta)
 }
 
+// IncConnectionsClosed increments closed connections with close mode.
 func (c *OTelMetricsCollector) IncConnectionsClosed(mode string) {
 	c.connectionsClosed.Add(context.Background(), 1, metric.WithAttributes(attribute.String("mode", mode)))
 }
 
+// ObserveConnectionDuration records a connection lifetime sample.
 func (c *OTelMetricsCollector) ObserveConnectionDuration(d time.Duration) {
 	c.connectionDuration.Record(context.Background(), d.Seconds())
 }
 
+// IncPacketsIn increments inbound packet count for packet type.
 func (c *OTelMetricsCollector) IncPacketsIn(packetType string) {
 	c.packetsIn.Add(context.Background(), 1, metric.WithAttributes(attribute.String("packet_type", packetType)))
 }
 
+// IncPacketsOut increments outbound packet count for packet type.
 func (c *OTelMetricsCollector) IncPacketsOut(packetType string) {
 	c.packetsOut.Add(context.Background(), 1, metric.WithAttributes(attribute.String("packet_type", packetType)))
 }
 
+// ObservePacketSize records packet size by traffic direction.
 func (c *OTelMetricsCollector) ObservePacketSize(direction string, size int64) {
 	c.packetSize.Record(context.Background(), size, metric.WithAttributes(attribute.String("direction", direction)))
 }
 
+// IncDecodeError increments decode errors with stage and reason labels.
 func (c *OTelMetricsCollector) IncDecodeError(stage, reason string) {
 	c.decodeErrors.Add(
 		context.Background(),
@@ -413,6 +423,7 @@ func (c *OTelMetricsCollector) IncDecodeError(stage, reason string) {
 	)
 }
 
+// IncEncodeError increments encode errors for packet type and reason.
 func (c *OTelMetricsCollector) IncEncodeError(packetType, reason string) {
 	c.encodeErrors.Add(
 		context.Background(),
@@ -424,10 +435,12 @@ func (c *OTelMetricsCollector) IncEncodeError(packetType, reason string) {
 	)
 }
 
+// IncConnectAttempt increments CONNECT attempt count.
 func (c *OTelMetricsCollector) IncConnectAttempt() {
 	c.connects.Add(context.Background(), 1)
 }
 
+// IncConnectRejection increments rejected CONNECT attempts by reason.
 func (c *OTelMetricsCollector) IncConnectRejection(reasonCode byte) {
 	c.connectReject.Add(
 		context.Background(),
@@ -436,6 +449,7 @@ func (c *OTelMetricsCollector) IncConnectRejection(reasonCode byte) {
 	)
 }
 
+// IncPublishIn increments inbound publish count by qos/retain labels.
 func (c *OTelMetricsCollector) IncPublishIn(qos byte, retain bool) {
 	c.publishIn.Add(
 		context.Background(),
@@ -447,10 +461,12 @@ func (c *OTelMetricsCollector) IncPublishIn(qos byte, retain bool) {
 	)
 }
 
+// IncPublishForwarded increments forwarded publish count by qos.
 func (c *OTelMetricsCollector) IncPublishForwarded(qos byte) {
 	c.publishFwd.Add(context.Background(), 1, metric.WithAttributes(attribute.Int("qos", int(qos))))
 }
 
+// AddPublishMatches adds matched subscription count for routing.
 func (c *OTelMetricsCollector) AddPublishMatches(n int) {
 	if n <= 0 {
 		return
@@ -458,6 +474,7 @@ func (c *OTelMetricsCollector) AddPublishMatches(n int) {
 	c.publishMatch.Add(context.Background(), int64(n))
 }
 
+// AddPublishOfflineQueued adds count of publishes queued offline.
 func (c *OTelMetricsCollector) AddPublishOfflineQueued(n int) {
 	if n <= 0 {
 		return
@@ -465,14 +482,17 @@ func (c *OTelMetricsCollector) AddPublishOfflineQueued(n int) {
 	c.publishQueued.Add(context.Background(), int64(n))
 }
 
+// IncSubscribe increments subscribe request count.
 func (c *OTelMetricsCollector) IncSubscribe() {
 	c.subscribe.Add(context.Background(), 1)
 }
 
+// IncUnsubscribe increments unsubscribe request count.
 func (c *OTelMetricsCollector) IncUnsubscribe() {
 	c.unsubscribe.Add(context.Background(), 1)
 }
 
+// IncSubscribeRejection increments rejected subscribe count by reason.
 func (c *OTelMetricsCollector) IncSubscribeRejection(reasonCode byte) {
 	c.subReject.Add(
 		context.Background(),
@@ -481,10 +501,12 @@ func (c *OTelMetricsCollector) IncSubscribeRejection(reasonCode byte) {
 	)
 }
 
+// IncOutboundQueueDrop increments outbound queue drop counters by path.
 func (c *OTelMetricsCollector) IncOutboundQueueDrop(path string) {
 	c.queueDrops.Add(context.Background(), 1, metric.WithAttributes(attribute.String("path", path)))
 }
 
+// AddInflight adjusts inflight message gauge while clamping at zero.
 func (c *OTelMetricsCollector) AddInflight(delta int64) {
 	if delta == 0 {
 		return
@@ -500,6 +522,7 @@ func (c *OTelMetricsCollector) AddInflight(delta int64) {
 	}
 }
 
+// AddPending adjusts pending message gauge while clamping at zero.
 func (c *OTelMetricsCollector) AddPending(delta int64) {
 	if delta == 0 {
 		return
@@ -515,16 +538,19 @@ func (c *OTelMetricsCollector) AddPending(delta int64) {
 	}
 }
 
+// ObservePubackLatency records PUBACK latency sample in seconds.
 func (c *OTelMetricsCollector) ObservePubackLatency(d time.Duration) {
 	c.pubackLatency.Record(context.Background(), d.Seconds())
 }
 
+// SetSessionCounts updates current active, persistent, and clean sessions.
 func (c *OTelMetricsCollector) SetSessionCounts(active, persistent, clean int64) {
 	c.sessionsActive.Store(active)
 	c.sessionsPersist.Store(persistent)
 	c.sessionsClean.Store(clean)
 }
 
+// SetBuildInfo stores version and revision labels for build info gauge.
 func (c *OTelMetricsCollector) SetBuildInfo(version, revision string) {
 	c.buildMu.Lock()
 	defer c.buildMu.Unlock()
@@ -532,7 +558,8 @@ func (c *OTelMetricsCollector) SetBuildInfo(version, revision string) {
 	c.buildRevision = revision
 }
 
-func (c *OTelMetricsCollector) Shutdown(ctx context.Context) error {
+// Shutdown unregisters OTel callbacks used by this collector.
+func (c *OTelMetricsCollector) Shutdown(_ context.Context) error {
 	if c.registration == nil {
 		return nil
 	}

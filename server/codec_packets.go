@@ -22,7 +22,11 @@ func readFixedHeader(r io.Reader, maxSize uint32) (packetType byte, flags byte, 
 	if remaining > maxSize {
 		return 0, 0, 0, 0, ErrPacketTooLarge
 	}
-	return packetType, flags, remaining, uint32(1 + rlBytes), nil
+	fixedHeaderBytes, err = checkedUint32(1 + rlBytes)
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return packetType, flags, remaining, fixedHeaderBytes, nil
 }
 
 // ReadConnect reads an MQTT 3.1.1 CONNECT packet.

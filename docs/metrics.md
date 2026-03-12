@@ -16,19 +16,11 @@ curl http://localhost:9464/metrics
 
 ## Lifecycle And Availability Signals
 
-These are designed to work with pull scraping (for example, every 60 seconds):
-
 - `mqtt_process_start_time_seconds` (gauge): process start Unix timestamp.
 - `mqtt_server_uptime_seconds` (gauge): seconds since process start.
 - `mqtt_listener_up` (gauge): `1` when MQTT listener is serving, `0` otherwise.
 - `mqtt_listener_errors_total` (counter): listener bind/accept failures.
 - `mqtt_build_info` (gauge): always `1` with static labels for build metadata.
-
-Notes:
-
-- Event counters like "start" and "stop" are intentionally not used as primary lifecycle signals.
-- Use `mqtt_process_start_time_seconds`, `mqtt_server_uptime_seconds`, and target `up` for robust restart/availability detection.
-- Graceful shutdown should be treated as a structured log event, not a guaranteed pull metric event.
 
 ## Metric Catalog
 
@@ -110,56 +102,3 @@ Notes:
 - `mqtt_sessions_clean` (gauge): number of clean-session clients.
   - Labels: none
 
-## Cardinality Policy
-
-Allowed labels are bounded enum-like sets:
-
-- `packet_type`, `qos`, `retain`, `mode`, `reason_code`, `direction`, `stage`, `path`, `version`, `revision`
-
-Do not add high-cardinality labels:
-
-- `client_id`
-- topic names or filters
-- `username`
-- `remote_addr`
-- arbitrary error strings or message payload content
-
-## Sample PromQL
-
-Connection churn rate:
-
-```promql
-rate(mqtt_connections_accepted_total[5m])
-```
-
-Ungraceful close ratio:
-
-```promql
-rate(mqtt_connections_closed_total{mode="ungraceful"}[5m])
-/
-rate(mqtt_connections_closed_total[5m])
-```
-
-Publish ingest throughput:
-
-```promql
-sum by (qos, retain) (rate(mqtt_publish_in_total[5m]))
-```
-
-Queue pressure:
-
-```promql
-mqtt_inflight_messages + mqtt_pending_messages
-```
-
-QoS1 PUBACK p95 latency:
-
-```promql
-histogram_quantile(0.95, sum by (le) (rate(mqtt_puback_latency_seconds_bucket[5m])))
-```
-
-Restart detection signal:
-
-```promql
-changes(mqtt_process_start_time_seconds[1h])
-```

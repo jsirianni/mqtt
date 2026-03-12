@@ -16,7 +16,6 @@ When the same option is set in multiple places, higher-priority values win:
 1. CLI flags
 2. Environment variables
 3. Config file values
-4. Built-in defaults
 
 ## Loading a Config File
 

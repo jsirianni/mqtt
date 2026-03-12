@@ -22,7 +22,7 @@ jobs:
         run: go mod download
 
       - name: Run revive
-        run: go tool revive -set_exit_status ./...
+        run: make revive
   gosec:
     runs-on: ubuntu-latest
     steps:
@@ -39,7 +39,7 @@ jobs:
         run: go mod download
 
       - name: Run gosec
-        run: go tool gosec ./...
+        run: make gosec
   test:
     runs-on: ubuntu-latest
     steps:
@@ -56,4 +56,29 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test ./...
+        run: make test
+  release-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go from go.mod
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          install-only: true
+
+      - name: Run release test
+        run: make release-test

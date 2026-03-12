@@ -18,6 +18,22 @@ go run ./cmd/mqtt
 go test ./...
 ```
 
+## Build With GoReleaser
+
+Build Linux binaries (`amd64`, `arm64`) locally:
+
+```bash
+goreleaser build --snapshot --clean
+```
+
+Build and publish container images to `ghcr.io/jsirianni/mqtt`:
+
+```bash
+goreleaser release --clean
+```
+
+The GoReleaser container image uses `scratch` and runs as a non-root user.
+
 ## Docs
 
 - Configuration: `docs/config.md`

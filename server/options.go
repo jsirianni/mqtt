@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Option configures a server before construction.
 type Option func(*serverOptions) error
 
 type serverOptions struct {
@@ -14,6 +15,7 @@ type serverOptions struct {
 	logger *zap.Logger
 }
 
+// WithListenAddr sets the server listen address.
 func WithListenAddr(addr string) Option {
 	return func(o *serverOptions) error {
 		o.cfg.ListenAddr = addr
@@ -21,6 +23,7 @@ func WithListenAddr(addr string) Option {
 	}
 }
 
+// WithMaxPacketSize sets the maximum allowed packet size.
 func WithMaxPacketSize(n uint32) Option {
 	return func(o *serverOptions) error {
 		o.cfg.MaxPacketSize = n
@@ -28,6 +31,7 @@ func WithMaxPacketSize(n uint32) Option {
 	}
 }
 
+// WithReceiveMaximum sets the receive maximum for a connection.
 func WithReceiveMaximum(n uint16) Option {
 	return func(o *serverOptions) error {
 		o.cfg.ReceiveMaximum = n
@@ -35,6 +39,7 @@ func WithReceiveMaximum(n uint16) Option {
 	}
 }
 
+// WithMaxOutboundQueue sets the max outbound queue depth.
 func WithMaxOutboundQueue(n int) Option {
 	return func(o *serverOptions) error {
 		o.cfg.MaxOutboundQueue = n
@@ -42,6 +47,7 @@ func WithMaxOutboundQueue(n int) Option {
 	}
 }
 
+// WithMaxSessionQueue sets the max session queue depth.
 func WithMaxSessionQueue(n int) Option {
 	return func(o *serverOptions) error {
 		o.cfg.MaxSessionQueue = n
@@ -49,6 +55,7 @@ func WithMaxSessionQueue(n int) Option {
 	}
 }
 
+// WithWriteTimeout sets write timeout on socket writes.
 func WithWriteTimeout(d time.Duration) Option {
 	return func(o *serverOptions) error {
 		o.cfg.WriteTimeout = d
@@ -56,6 +63,7 @@ func WithWriteTimeout(d time.Duration) Option {
 	}
 }
 
+// WithReadTimeout sets read timeout on socket reads.
 func WithReadTimeout(d time.Duration) Option {
 	return func(o *serverOptions) error {
 		o.cfg.ReadTimeout = d
@@ -63,6 +71,7 @@ func WithReadTimeout(d time.Duration) Option {
 	}
 }
 
+// WithSessionSweepInterval sets the interval for session sweeping.
 func WithSessionSweepInterval(d time.Duration) Option {
 	return func(o *serverOptions) error {
 		o.cfg.SessionSweepInterval = d
@@ -70,6 +79,7 @@ func WithSessionSweepInterval(d time.Duration) Option {
 	}
 }
 
+// WithLogger sets the base logger.
 func WithLogger(l *zap.Logger) Option {
 	return func(o *serverOptions) error {
 		o.logger = l

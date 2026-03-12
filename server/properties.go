@@ -306,12 +306,6 @@ func parseWillProperties(r io.Reader, propLen int) (*WillProperties, error) {
 	return p, nil
 }
 
-// encodeConnackProperties writes CONNACK properties to buf. Returns bytes written.
-// Removed duplicate implementation; use appendConnackProperties.
-func encodeConnackProperties(buf []byte, p *ConnackProperties) int {
-	return 0
-}
-
 // We need a simpler approach: build property payload first then prepend length.
 func sizeConnackProperties(p *ConnackProperties) int {
 	if p == nil {
@@ -403,10 +397,12 @@ func appendConnackProperties(buf []byte, p *ConnackProperties) []byte {
 		payload = append(payload, b[:]...)
 	}
 	if p.AssignedClientID != nil {
-		s := *p.AssignedClientID
 		payload = append(payload, PropAssignedClientIdentifier)
-		payload = append(payload, byte(len(s)>>8), byte(len(s)))
-		payload = append(payload, s...)
+		var err error
+		payload, err = appendUTF8Data(payload, []byte(*p.AssignedClientID))
+		if err != nil {
+			return buf
+		}
 	}
 	if p.MaximumPacketSize != nil {
 		payload = append(payload, PropMaximumPacketSize)
@@ -418,7 +414,11 @@ func appendConnackProperties(buf []byte, p *ConnackProperties) []byte {
 		return buf
 	}
 	vbi := make([]byte, 5)
-	n := encodeVariableByteInteger(vbi, uint32(len(payload)))
+	payloadLen, err := checkedUint32(len(payload))
+	if err != nil {
+		return buf
+	}
+	n := encodeVariableByteInteger(vbi, payloadLen)
 	buf = append(buf, vbi[:n]...)
 	buf = append(buf, payload...)
 	return buf
@@ -638,31 +638,49 @@ func appendPublishProperties(buf []byte, p *PublishProperties) []byte {
 	}
 	if p.ContentType != nil {
 		payload = append(payload, PropContentType)
-		payload = append(payload, byte(len(*p.ContentType)>>8), byte(len(*p.ContentType)))
-		payload = append(payload, *p.ContentType...)
+		var err error
+		payload, err = appendUTF8Data(payload, []byte(*p.ContentType))
+		if err != nil {
+			return buf
+		}
 	}
 	if p.ResponseTopic != nil {
 		payload = append(payload, PropResponseTopic)
-		payload = append(payload, byte(len(*p.ResponseTopic)>>8), byte(len(*p.ResponseTopic)))
-		payload = append(payload, *p.ResponseTopic...)
+		var err error
+		payload, err = appendUTF8Data(payload, []byte(*p.ResponseTopic))
+		if err != nil {
+			return buf
+		}
 	}
 	if len(p.CorrelationData) > 0 {
 		payload = append(payload, PropCorrelationData)
-		payload = append(payload, byte(len(p.CorrelationData)>>8), byte(len(p.CorrelationData)))
-		payload = append(payload, p.CorrelationData...)
+		var err error
+		payload, err = appendUTF8Data(payload, p.CorrelationData)
+		if err != nil {
+			return buf
+		}
 	}
 	for _, kv := range p.UserProperty {
 		payload = append(payload, PropUserProperty)
-		payload = append(payload, byte(len(kv[0])>>8), byte(len(kv[0])))
-		payload = append(payload, kv[0]...)
-		payload = append(payload, byte(len(kv[1])>>8), byte(len(kv[1])))
-		payload = append(payload, kv[1]...)
+		var err error
+		payload, err = appendUTF8Data(payload, []byte(kv[0]))
+		if err != nil {
+			return buf
+		}
+		payload, err = appendUTF8Data(payload, []byte(kv[1]))
+		if err != nil {
+			return buf
+		}
 	}
 	if len(payload) == 0 {
 		return buf
 	}
 	vbi := make([]byte, 5)
-	n := encodeVariableByteInteger(vbi, uint32(len(payload)))
+	payloadLen, err := checkedUint32(len(payload))
+	if err != nil {
+		return buf
+	}
+	n := encodeVariableByteInteger(vbi, payloadLen)
 	buf = append(buf, vbi[:n]...)
 	buf = append(buf, payload...)
 	return buf

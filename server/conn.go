@@ -25,6 +25,7 @@ type Conn struct {
 	keepAlive uint16
 }
 
+// NewConn constructs a connection wrapper around a net.Conn.
 func NewConn(netConn net.Conn, broker *Broker, logger *zap.Logger) *Conn {
 	return &Conn{
 		netConn:  netConn,
@@ -48,6 +49,7 @@ func (c *Conn) closeWithContext(graceful bool, reasonCode byte, sendDisconnect b
 	})
 }
 
+// Run starts read/write loops and blocks until read loop exits.
 func (c *Conn) Run() {
 	go c.writeLoop()
 	c.readLoop()

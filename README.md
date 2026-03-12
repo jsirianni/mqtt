@@ -18,6 +18,10 @@ go run ./cmd/mqtt
 go test ./...
 ```
 
+## Docs
+
+- Configuration: `docs/config.md`
+
 ## Lint and Security
 
 This repository uses Go tool dependencies for static analysis in CI:

@@ -1,0 +1,14 @@
+# Build outputs (Linux/macOS)
+/mqtt
+/mqtt.exe
+*.out
+*.test
+
+# Build outputs (Windows)
+*.exe
+*.exe~
+*.dll
+
+# Shared binary artifacts
+bin/
+dist/

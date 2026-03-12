@@ -63,6 +63,7 @@ type ConnectPacket struct {
 	Password     []byte
 }
 
+// PacketType returns the CONNECT packet type.
 func (*ConnectPacket) PacketType() byte { return PacketCONNECT }
 
 // MQTT 3.1.1 CONNACK return codes.
@@ -106,6 +107,7 @@ type ConnackPacket struct {
 	Props          *ConnackProperties
 }
 
+// PacketType returns the CONNACK packet type.
 func (*ConnackPacket) PacketType() byte { return PacketCONNACK }
 
 // ConnackProperties in CONNACK
@@ -136,6 +138,7 @@ type PublishPacket struct {
 	Payload  []byte
 }
 
+// PacketType returns the PUBLISH packet type.
 func (*PublishPacket) PacketType() byte { return PacketPUBLISH }
 
 // PublishProperties on PUBLISH
@@ -157,8 +160,10 @@ type PubackPacket struct {
 	Props      *PubackProperties
 }
 
+// PacketType returns the PUBACK packet type.
 func (*PubackPacket) PacketType() byte { return PacketPUBACK }
 
+// PubackProperties contains optional PUBACK properties.
 type PubackProperties struct {
 	ReasonString *string
 	UserProperty [][2]string
@@ -171,13 +176,16 @@ type SubscribePacket struct {
 	Filters  []SubscribeFilter
 }
 
+// PacketType returns the SUBSCRIBE packet type.
 func (*SubscribePacket) PacketType() byte { return PacketSUBSCRIBE }
 
+// SubscribeProperties contains optional SUBSCRIBE properties.
 type SubscribeProperties struct {
 	SubscriptionID *uint32
 	UserProperty   [][2]string
 }
 
+// SubscribeFilter describes a topic filter and options for SUBSCRIBE.
 type SubscribeFilter struct {
 	Filter            string
 	QoS               byte
@@ -193,8 +201,10 @@ type SubackPacket struct {
 	ReasonCodes []byte
 }
 
+// PacketType returns the SUBACK packet type.
 func (*SubackPacket) PacketType() byte { return PacketSUBACK }
 
+// SubackProperties contains optional SUBACK properties.
 type SubackProperties struct {
 	ReasonString *string
 	UserProperty [][2]string
@@ -207,8 +217,10 @@ type UnsubscribePacket struct {
 	Filters  []string
 }
 
+// PacketType returns the UNSUBSCRIBE packet type.
 func (*UnsubscribePacket) PacketType() byte { return PacketUNSUBSCRIBE }
 
+// UnsubscribeProperties contains optional UNSUBSCRIBE properties.
 type UnsubscribeProperties struct {
 	UserProperty [][2]string
 }
@@ -220,8 +232,10 @@ type UnsubackPacket struct {
 	ReasonCodes []byte
 }
 
+// PacketType returns the UNSUBACK packet type.
 func (*UnsubackPacket) PacketType() byte { return PacketUNSUBACK }
 
+// UnsubackProperties contains optional UNSUBACK properties.
 type UnsubackProperties struct {
 	ReasonString *string
 	UserProperty [][2]string
@@ -230,11 +244,13 @@ type UnsubackProperties struct {
 // PingreqPacket MQTT PINGREQ
 type PingreqPacket struct{}
 
+// PacketType returns the PINGREQ packet type.
 func (*PingreqPacket) PacketType() byte { return PacketPINGREQ }
 
 // PingrespPacket MQTT PINGRESP
 type PingrespPacket struct{}
 
+// PacketType returns the PINGRESP packet type.
 func (*PingrespPacket) PacketType() byte { return PacketPINGRESP }
 
 // DisconnectPacket MQTT DISCONNECT (inbound or outbound)
@@ -243,8 +259,10 @@ type DisconnectPacket struct {
 	Props      *DisconnectProperties
 }
 
+// PacketType returns the DISCONNECT packet type.
 func (*DisconnectPacket) PacketType() byte { return PacketDISCONNECT }
 
+// DisconnectProperties contains optional DISCONNECT properties.
 type DisconnectProperties struct {
 	SessionExpiryInterval *uint32
 	ReasonString          *string

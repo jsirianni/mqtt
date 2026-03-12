@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/binary"
 	"io"
+	"math"
 	"unicode/utf8"
 )
 
@@ -106,7 +107,10 @@ func readUTF8String(r io.Reader) (string, error) {
 
 // writeUTF8String writes 2-byte length then UTF-8 bytes.
 func writeUTF8String(buf []byte, s string) int {
-	writeUint16(buf, uint16(len(s)))
+	if len(s) > math.MaxUint16 {
+		return 0
+	}
+	writeUint16(buf, uint16(len(s))) // #nosec G115 -- bounded by len check above.
 	copy(buf[2:], s)
 	return 2 + len(s)
 }
@@ -137,4 +141,26 @@ func readByte(r io.Reader) (byte, error) {
 		return 0, err
 	}
 	return b[0], nil
+}
+
+func checkedUint32(n int) (uint32, error) {
+	if n < 0 || n > maxRemainingLength {
+		return 0, ErrPacketTooLarge
+	}
+	return uint32(n), nil
+}
+
+func appendUint16(buf []byte, v uint16) []byte {
+	var b [2]byte
+	binary.BigEndian.PutUint16(b[:], v)
+	return append(buf, b[:]...)
+}
+
+func appendUTF8Data(buf []byte, data []byte) ([]byte, error) {
+	if len(data) > math.MaxUint16 {
+		return nil, ErrPacketTooLarge
+	}
+	buf = appendUint16(buf, uint16(len(data))) // #nosec G115 -- bounded by len check above.
+	buf = append(buf, data...)
+	return buf, nil
 }

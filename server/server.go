@@ -6,6 +6,7 @@ import (
 	"go.uber.org/zap"
 )
 
+// Server bundles broker state and network listener lifecycle.
 type Server struct {
 	cfg      Config
 	logger   *zap.Logger
@@ -13,6 +14,7 @@ type Server struct {
 	listener *Listener
 }
 
+// New constructs a server from the provided options.
 func New(opts ...Option) (*Server, error) {
 	o := &serverOptions{
 		cfg:    defaultConfig(),
@@ -38,6 +40,7 @@ func New(opts ...Option) (*Server, error) {
 	}, nil
 }
 
+// Start runs the listener until the context is canceled or a listener error occurs.
 func (s *Server) Start(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	go func() {
@@ -52,6 +55,7 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+// Stop closes the server listener and active connections.
 func (s *Server) Stop(_ context.Context) error {
 	if s.listener == nil {
 		return nil

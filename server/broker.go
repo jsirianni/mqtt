@@ -1,3 +1,4 @@
+// Package server implements the in-memory MQTT broker.
 package server
 
 import (
@@ -142,11 +143,7 @@ func (b *Broker) removeSessionLocked(sess *Session, publishWill bool) {
 
 func (b *Broker) publishWillLocked(will *WillMessage) {
 	msg := will.Msg
-	// Apply delay: if delay > 0 we would schedule; v1 simplification: publish immediately if delay 0
-	if will.DelayInterval > 0 {
-		// In full impl we'd schedule; for v1 we still publish (design says "maintain one timer per disconnected session")
-		// Simplification: publish now
-	}
+	_ = will.DelayInterval // v1 simplification: publish immediately.
 	b.routeLocked(msg, nil)
 }
 
@@ -502,7 +499,7 @@ func (b *Broker) HandleUnsubscribe(c *Conn, pkt *UnsubscribePacket) (*UnsubackPa
 }
 
 // HandleDisconnect processes graceful DISCONNECT from client.
-func (b *Broker) HandleDisconnect(c *Conn, pkt *DisconnectPacket) error {
+func (b *Broker) HandleDisconnect(c *Conn, _ *DisconnectPacket) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	sess := c.session

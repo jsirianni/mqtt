@@ -20,6 +20,7 @@ type Listener struct {
 	conns map[*Conn]struct{}
 }
 
+// NewListener creates a listener bound to an address and broker.
 func NewListener(addr string, broker *Broker, logger *zap.Logger) *Listener {
 	return &Listener{
 		addr:   addr,

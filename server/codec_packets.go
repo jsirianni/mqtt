@@ -142,6 +142,7 @@ func WriteConnack(w io.Writer, p *ConnackPacket) error {
 	return err
 }
 
+// ReadPublish reads a PUBLISH packet payload.
 func ReadPublish(r io.Reader, remaining uint32, flags byte) (*PublishPacket, error) {
 	dup := (flags & 0x08) != 0
 	qos := (flags >> 1) & 0x03
@@ -187,6 +188,7 @@ func ReadPublish(r io.Reader, remaining uint32, flags byte) (*PublishPacket, err
 	}, nil
 }
 
+// WritePublish serializes a PUBLISH packet.
 func WritePublish(w io.Writer, p *PublishPacket, maxPacketSize uint32) error {
 	if maxPacketSize == 0 {
 		maxPacketSize = 268435455
@@ -196,7 +198,11 @@ func WritePublish(w io.Writer, p *PublishPacket, maxPacketSize uint32) error {
 		headerLen += 2
 	}
 	payloadLen := len(p.Payload)
-	total := 1 + sizeRemainingLength(uint32(headerLen+payloadLen)) + headerLen + payloadLen
+	remainingLength, err := checkedUint32(headerLen + payloadLen)
+	if err != nil {
+		return err
+	}
+	total := 1 + sizeRemainingLength(remainingLength) + headerLen + payloadLen
 	if total > int(maxPacketSize) {
 		return ErrPacketTooLarge
 	}
@@ -211,18 +217,21 @@ func WritePublish(w io.Writer, p *PublishPacket, maxPacketSize uint32) error {
 	buf := make([]byte, 0, total)
 	buf = append(buf, PacketPUBLISH<<4|flags)
 	rlBuf := make([]byte, 5)
-	n := encodeRemainingLength(rlBuf, uint32(headerLen+payloadLen))
+	n := encodeRemainingLength(rlBuf, remainingLength)
 	buf = append(buf, rlBuf[:n]...)
-	buf = append(buf, byte(len(p.Topic)>>8), byte(len(p.Topic)))
-	buf = append(buf, p.Topic...)
+	buf, err = appendUTF8Data(buf, []byte(p.Topic))
+	if err != nil {
+		return err
+	}
 	if p.QoS > 0 {
-		buf = append(buf, byte(p.PacketID>>8), byte(p.PacketID))
+		buf = appendUint16(buf, p.PacketID)
 	}
 	buf = append(buf, p.Payload...)
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	return err
 }
 
+// ReadPuback reads a PUBACK packet.
 func ReadPuback(r io.Reader, remaining uint32) (*PubackPacket, error) {
 	if remaining != 2 {
 		return nil, ErrMalformedPacket
@@ -234,16 +243,15 @@ func ReadPuback(r io.Reader, remaining uint32) (*PubackPacket, error) {
 	return &PubackPacket{PacketID: packetID, ReasonCode: ReasonSuccess}, nil
 }
 
+// WritePuback serializes a PUBACK packet.
 func WritePuback(w io.Writer, p *PubackPacket) error {
-	buf := []byte{
-		PacketPUBACK << 4,
-		2,
-		byte(p.PacketID >> 8), byte(p.PacketID),
-	}
+	buf := []byte{PacketPUBACK << 4, 2}
+	buf = appendUint16(buf, p.PacketID)
 	_, err := w.Write(buf)
 	return err
 }
 
+// ReadSubscribe reads a SUBSCRIBE packet.
 func ReadSubscribe(r io.Reader, remaining uint32) (*SubscribePacket, error) {
 	packetID, err := readUint16(r)
 	if err != nil {
@@ -270,6 +278,7 @@ func ReadSubscribe(r io.Reader, remaining uint32) (*SubscribePacket, error) {
 	return &SubscribePacket{PacketID: packetID, Filters: filters}, nil
 }
 
+// WriteSuback serializes a SUBACK packet.
 func WriteSuback(w io.Writer, p *SubackPacket) error {
 	reasonCodes := make([]byte, len(p.ReasonCodes))
 	for i, rc := range p.ReasonCodes {
@@ -284,14 +293,19 @@ func WriteSuback(w io.Writer, p *SubackPacket) error {
 	buf := make([]byte, 0, 2+5+bodyLen)
 	buf = append(buf, PacketSUBACK<<4)
 	rlBuf := make([]byte, 5)
-	n := encodeRemainingLength(rlBuf, uint32(bodyLen))
+	bodyRemainingLength, err := checkedUint32(bodyLen)
+	if err != nil {
+		return err
+	}
+	n := encodeRemainingLength(rlBuf, bodyRemainingLength)
 	buf = append(buf, rlBuf[:n]...)
-	buf = append(buf, byte(p.PacketID>>8), byte(p.PacketID))
+	buf = appendUint16(buf, p.PacketID)
 	buf = append(buf, reasonCodes...)
-	_, err := w.Write(buf)
+	_, err = w.Write(buf)
 	return err
 }
 
+// ReadUnsubscribe reads an UNSUBSCRIBE packet.
 func ReadUnsubscribe(r io.Reader, remaining uint32) (*UnsubscribePacket, error) {
 	packetID, err := readUint16(r)
 	if err != nil {
@@ -310,28 +324,29 @@ func ReadUnsubscribe(r io.Reader, remaining uint32) (*UnsubscribePacket, error) 
 	return &UnsubscribePacket{PacketID: packetID, Filters: filters}, nil
 }
 
+// WriteUnsuback serializes an UNSUBACK packet.
 func WriteUnsuback(w io.Writer, p *UnsubackPacket) error {
-	buf := []byte{
-		PacketUNSUBACK << 4,
-		2,
-		byte(p.PacketID >> 8), byte(p.PacketID),
-	}
+	buf := []byte{PacketUNSUBACK << 4, 2}
+	buf = appendUint16(buf, p.PacketID)
 	_, err := w.Write(buf)
 	return err
 }
 
+// WritePingresp serializes a PINGRESP packet.
 func WritePingresp(w io.Writer) error {
 	_, err := w.Write([]byte{PacketPINGRESP << 4, 0})
 	return err
 }
 
-func ReadDisconnect(r io.Reader, remaining uint32) (*DisconnectPacket, error) {
+// ReadDisconnect reads a DISCONNECT packet.
+func ReadDisconnect(_ io.Reader, remaining uint32) (*DisconnectPacket, error) {
 	if remaining != 0 {
 		return nil, ErrMalformedPacket
 	}
 	return &DisconnectPacket{ReasonCode: ReasonSuccess}, nil
 }
 
+// WriteDisconnect serializes a DISCONNECT packet.
 func WriteDisconnect(w io.Writer, _ *DisconnectPacket) error {
 	_, err := w.Write([]byte{PacketDISCONNECT << 4, 0})
 	return err
@@ -396,6 +411,7 @@ func ReadPacket(r io.Reader, maxPacketSize uint32) (interface{}, uint32, error) 
 	}
 }
 
+// WritePacket writes a supported outbound packet.
 func WritePacket(w io.Writer, pkt Packet, maxPacketSize uint32) error {
 	if maxPacketSize == 0 {
 		maxPacketSize = 268435455

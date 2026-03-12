@@ -1,8 +1,10 @@
+// Package main provides the mqtt server CLI entrypoint.
 package main
 
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -26,7 +28,7 @@ func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "mqtt",
 		Short: "MQTT server",
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runServer(cmd.Context())
 		},
 	}
@@ -83,7 +85,7 @@ func runServer(ctx context.Context) error {
 		server.WithLogger(logger.Named("mqtt")),
 		server.WithListenAddr(viper.GetString("server.listen_addr")),
 		server.WithMaxPacketSize(viper.GetUint32("server.max_packet_size")),
-		server.WithReceiveMaximum(uint16(viper.GetUint("server.receive_maximum"))),
+		server.WithReceiveMaximum(receiveMaximum()),
 		server.WithMaxOutboundQueue(viper.GetInt("server.max_outbound_queue")),
 		server.WithMaxSessionQueue(viper.GetInt("server.max_session_queue")),
 		server.WithWriteTimeout(viper.GetDuration("server.write_timeout")),
@@ -115,4 +117,12 @@ func newLogger() (*zap.Logger, error) {
 		cfg.Level = zap.NewAtomicLevelAt(zap.InfoLevel)
 	}
 	return cfg.Build()
+}
+
+func receiveMaximum() uint16 {
+	n := viper.GetUint("server.receive_maximum")
+	if n > math.MaxUint16 {
+		return math.MaxUint16
+	}
+	return uint16(n)
 }

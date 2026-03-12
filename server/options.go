@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jsirianni/mqtt/storage/contracts"
 	"go.uber.org/zap"
 )
 
@@ -13,6 +14,7 @@ type Option func(*serverOptions) error
 type serverOptions struct {
 	cfg    Config
 	logger *zap.Logger
+	stores contracts.BrokerStores
 }
 
 // WithListenAddr sets the server listen address.
@@ -83,6 +85,14 @@ func WithSessionSweepInterval(d time.Duration) Option {
 func WithLogger(l *zap.Logger) Option {
 	return func(o *serverOptions) error {
 		o.logger = l
+		return nil
+	}
+}
+
+// WithStores sets broker storage backends.
+func WithStores(stores contracts.BrokerStores) Option {
+	return func(o *serverOptions) error {
+		o.stores = stores
 		return nil
 	}
 }

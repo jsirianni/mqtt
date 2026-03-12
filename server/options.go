@@ -12,9 +12,10 @@ import (
 type Option func(*serverOptions) error
 
 type serverOptions struct {
-	cfg    Config
-	logger *zap.Logger
-	stores contracts.BrokerStores
+	cfg     Config
+	logger  *zap.Logger
+	stores  contracts.BrokerStores
+	metrics MetricsCollector
 }
 
 // WithListenAddr sets the server listen address.
@@ -93,6 +94,14 @@ func WithLogger(l *zap.Logger) Option {
 func WithStores(stores contracts.BrokerStores) Option {
 	return func(o *serverOptions) error {
 		o.stores = stores
+		return nil
+	}
+}
+
+// WithMetrics sets the server metrics collector.
+func WithMetrics(metrics MetricsCollector) Option {
+	return func(o *serverOptions) error {
+		o.metrics = metrics
 		return nil
 	}
 }

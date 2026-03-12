@@ -19,14 +19,21 @@ type Delivery struct {
 
 // Broker holds shared in-memory state.
 type Broker struct {
-	mu     sync.RWMutex
-	cfg    Config
-	stores contracts.BrokerStores
-	logger *zap.Logger
+	mu      sync.RWMutex
+	cfg     Config
+	stores  contracts.BrokerStores
+	logger  *zap.Logger
+	metrics MetricsCollector
+	// qos1SentAt tracks send timestamps for PUBACK latency observations.
+	qos1SentAt    map[string]map[uint16]time.Time
+	pendingCounts map[string]int
 }
 
 // NewBroker creates a broker with the given config.
-func NewBroker(cfg Config, logger *zap.Logger, stores contracts.BrokerStores) *Broker {
+func NewBroker(cfg Config, logger *zap.Logger, stores contracts.BrokerStores, metrics MetricsCollector) *Broker {
+	if metrics == nil {
+		metrics = NewNoopMetricsCollector()
+	}
 	mem := memstore.NewStores()
 	if stores.Sessions == nil {
 		stores.Sessions = mem
@@ -39,9 +46,12 @@ func NewBroker(cfg Config, logger *zap.Logger, stores contracts.BrokerStores) *B
 	}
 
 	return &Broker{
-		cfg:    cfg,
-		stores: stores,
-		logger: logger,
+		cfg:           cfg,
+		stores:        stores,
+		logger:        logger,
+		metrics:       metrics,
+		qos1SentAt:    make(map[string]map[uint16]time.Time),
+		pendingCounts: make(map[string]int),
 	}
 }
 
@@ -76,10 +86,108 @@ func (b *Broker) canSendMore(clientID string, sess *Session) bool {
 	return count < int(sess.ClientReceiveMaximum)
 }
 
+func (b *Broker) recordInflightAdded(clientID string, packetID uint16) {
+	if clientID == "" || packetID == 0 {
+		return
+	}
+	perClient := b.qos1SentAt[clientID]
+	if perClient == nil {
+		perClient = make(map[uint16]time.Time)
+		b.qos1SentAt[clientID] = perClient
+	}
+	perClient[packetID] = time.Now()
+	b.metrics.AddInflight(1)
+}
+
+func (b *Broker) recordInflightRemoved(clientID string, packetID uint16, observeLatency bool) {
+	if clientID == "" || packetID == 0 {
+		return
+	}
+	perClient := b.qos1SentAt[clientID]
+	if perClient == nil {
+		return
+	}
+	sentAt, ok := perClient[packetID]
+	if !ok {
+		return
+	}
+	delete(perClient, packetID)
+	if len(perClient) == 0 {
+		delete(b.qos1SentAt, clientID)
+	}
+	b.metrics.AddInflight(-1)
+	if observeLatency {
+		b.metrics.ObservePubackLatency(time.Since(sentAt))
+	}
+}
+
+func (b *Broker) clearClientInflightMetrics(clientID string) {
+	perClient := b.qos1SentAt[clientID]
+	if perClient == nil {
+		return
+	}
+	b.metrics.AddInflight(-int64(len(perClient)))
+	delete(b.qos1SentAt, clientID)
+}
+
+func (b *Broker) recordPendingAdded(clientID string) {
+	if clientID == "" {
+		return
+	}
+	b.pendingCounts[clientID]++
+	b.metrics.AddPending(1)
+}
+
+func (b *Broker) recordPendingRemoved(clientID string) {
+	if clientID == "" {
+		return
+	}
+	n := b.pendingCounts[clientID]
+	if n <= 0 {
+		return
+	}
+	if n == 1 {
+		delete(b.pendingCounts, clientID)
+	} else {
+		b.pendingCounts[clientID] = n - 1
+	}
+	b.metrics.AddPending(-1)
+}
+
+func (b *Broker) clearClientPendingMetrics(clientID string) {
+	n := b.pendingCounts[clientID]
+	if n <= 0 {
+		return
+	}
+	delete(b.pendingCounts, clientID)
+	b.metrics.AddPending(-int64(n))
+}
+
+func (b *Broker) recountSessionMetricsLocked() {
+	var active int64
+	var persistent int64
+	var clean int64
+	b.stores.Sessions.ForEachSession(func(_ string, raw any) bool {
+		sess := asSession(raw)
+		if sess == nil {
+			return true
+		}
+		active++
+		if sess.CleanStartAtConnect {
+			clean++
+		} else {
+			persistent++
+		}
+		return true
+	})
+	b.metrics.SetSessionCounts(active, persistent, clean)
+}
+
 // HandleConnect processes CONNECT and returns CONNACK or error.
 func (b *Broker) HandleConnect(c *Conn, pkt *ConnectPacket) (*ConnackPacket, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.metrics.IncConnectAttempt()
 
 	clientID := pkt.ClientID
 	assigned := false
@@ -153,6 +261,7 @@ func (b *Broker) HandleConnect(c *Conn, pkt *ConnectPacket) (*ConnackPacket, err
 		ReasonCode:     ConnackAccepted,
 	}
 	_ = assigned // v3.1.1 CONNACK cannot include assigned client identifier.
+	b.recountSessionMetricsLocked()
 	return connack, nil
 }
 
@@ -179,9 +288,12 @@ func pktToPublishMessage(topic string, payload []byte, qos byte, retain bool, pr
 // removeSessionLocked removes session from broker and publishes will if ungraceful. Call with b.mu held.
 func (b *Broker) removeSessionLocked(sess *Session, publishWill bool) {
 	b.stores.Sessions.DeleteSession(sess.ClientID)
+	b.clearClientInflightMetrics(sess.ClientID)
+	b.clearClientPendingMetrics(sess.ClientID)
 	if publishWill && sess.Will != nil {
 		b.publishWillLocked(sess.Will)
 	}
+	b.recountSessionMetricsLocked()
 }
 
 func (b *Broker) publishWillLocked(will *WillMessage) {
@@ -241,11 +353,14 @@ func (b *Broker) makeDelivery(sess *Session, msg *PublishMessage, grantedQoS byt
 		if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, msg); err != nil {
 			return nil
 		}
+		b.recordInflightAdded(sess.ClientID, pid)
 		return &Delivery{Target: sess, Packet: pkt}
 	}
 	// Offline: queue QoS 1 only
 	if grantedQoS == 1 {
-		_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
+		if err := b.stores.Delivery.EnqueuePending(sess.ClientID, msg); err == nil {
+			b.recordPendingAdded(sess.ClientID)
+		}
 	}
 	return nil
 }
@@ -257,10 +372,15 @@ func (b *Broker) sendDeliveryLocked(d *Delivery) {
 	select {
 	case d.Target.Conn.outbound <- d.Packet:
 	default:
+		b.metrics.IncOutboundQueueDrop("broker_send_delivery")
 		// Queue full; could add to session pending (v1: drop or queue)
 		if pub, ok := d.Packet.(*PublishPacket); ok && pub.QoS == 1 {
-			_ = b.stores.Delivery.RemoveInflight(d.Target.ClientID, pub.PacketID)
-			_ = b.stores.Delivery.EnqueuePending(d.Target.ClientID, packetToMessage(pub))
+			if err := b.stores.Delivery.RemoveInflight(d.Target.ClientID, pub.PacketID); err == nil {
+				b.recordInflightRemoved(d.Target.ClientID, pub.PacketID, false)
+			}
+			if err := b.stores.Delivery.EnqueuePending(d.Target.ClientID, packetToMessage(pub)); err == nil {
+				b.recordPendingAdded(d.Target.ClientID)
+			}
 		}
 	}
 }
@@ -320,6 +440,7 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 	msg := packetToMessage(pkt)
 	msg.PublisherClientID = c.clientID
 	msg.ReceivedAt = time.Now()
+	b.metrics.IncPublishIn(pkt.QoS, pkt.Retain)
 	b.logger.Info("publish received",
 		zap.String("client_id", c.clientID),
 		zap.String("topic", pkt.Topic),
@@ -370,7 +491,9 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 					deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 				} else {
 					if !b.canSendMore(sess.ClientID, sess) {
-						_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
+						if err := b.stores.Delivery.EnqueuePending(sess.ClientID, msg); err == nil {
+							b.recordPendingAdded(sess.ClientID)
+						}
 						offlineQueued++
 						continue
 					}
@@ -382,10 +505,13 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 					if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, msg); err != nil {
 						continue
 					}
+					b.recordInflightAdded(sess.ClientID, pid)
 					deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 				}
 			} else if grantedQoS == 1 {
-				_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
+				if err := b.stores.Delivery.EnqueuePending(sess.ClientID, msg); err == nil {
+					b.recordPendingAdded(sess.ClientID)
+				}
 				offlineQueued++
 			}
 		}
@@ -396,6 +522,15 @@ func (b *Broker) HandlePublish(c *Conn, pkt *PublishPacket) ([]Delivery, *Puback
 	if pkt.QoS == 1 {
 		puback = &PubackPacket{PacketID: pkt.PacketID, ReasonCode: ReasonSuccess}
 	}
+	for _, d := range deliveries {
+		pub, ok := d.Packet.(*PublishPacket)
+		if !ok {
+			continue
+		}
+		b.metrics.IncPublishForwarded(pub.QoS)
+	}
+	b.metrics.AddPublishMatches(matchedSubscriptions)
+	b.metrics.AddPublishOfflineQueued(offlineQueued)
 	b.logger.Info("publish forwarded",
 		zap.String("client_id", c.clientID),
 		zap.String("topic", pkt.Topic),
@@ -415,7 +550,9 @@ func (b *Broker) HandlePuback(c *Conn, pkt *PubackPacket) error {
 	if sess == nil {
 		return nil
 	}
-	_ = b.stores.Delivery.RemoveInflight(sess.ClientID, pkt.PacketID)
+	if err := b.stores.Delivery.RemoveInflight(sess.ClientID, pkt.PacketID); err == nil {
+		b.recordInflightRemoved(sess.ClientID, pkt.PacketID, true)
+	}
 	// Drain pending queue into outbound
 	b.drainPendingLocked(sess)
 	return nil
@@ -431,6 +568,7 @@ func (b *Broker) drainPendingLocked(sess *Session) {
 		if err != nil || !ok {
 			return
 		}
+		b.recordPendingRemoved(sess.ClientID)
 		msg := asPublishMessage(raw)
 		if msg == nil {
 			continue
@@ -445,10 +583,14 @@ func (b *Broker) drainPendingLocked(sess *Session) {
 		if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, msg); err != nil {
 			return
 		}
+		b.recordInflightAdded(sess.ClientID, pid)
 		select {
 		case sess.Conn.outbound <- p:
 		default:
-			_ = b.stores.Delivery.EnqueuePending(sess.ClientID, msg)
+			b.metrics.IncOutboundQueueDrop("broker_drain_pending")
+			if err := b.stores.Delivery.EnqueuePending(sess.ClientID, msg); err == nil {
+				b.recordPendingAdded(sess.ClientID)
+			}
 			return
 		}
 	}
@@ -458,6 +600,7 @@ func (b *Broker) drainPendingLocked(sess *Session) {
 func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, []Delivery, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.metrics.IncSubscribe()
 	sess := c.session
 	if sess == nil {
 		return nil, nil, ErrProtocolError
@@ -469,10 +612,12 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 	for i, f := range pkt.Filters {
 		if IsSharedFilter(f.Filter) {
 			reasonCodes[i] = ReasonWildcardSubscriptionNotSupported
+			b.metrics.IncSubscribeRejection(reasonCodes[i])
 			continue
 		}
 		if err := ValidateTopicFilter(f.Filter, false); err != nil {
 			reasonCodes[i] = ReasonProtocolError
+			b.metrics.IncSubscribeRejection(reasonCodes[i])
 			continue
 		}
 		grantedQoS := f.QoS
@@ -491,6 +636,7 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 		existing := sess.Subs[f.Filter]
 		if err := b.stores.Sessions.UpsertSubscription(sess.ClientID, sub.Filter, sub); err != nil {
 			reasonCodes[i] = ReasonUnspecifiedError
+			b.metrics.IncSubscribeRejection(reasonCodes[i])
 			continue
 		}
 		sess.Subs[f.Filter] = sub
@@ -529,7 +675,9 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 						deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 					} else {
 						if !b.canSendMore(sess.ClientID, sess) {
-							_ = b.stores.Delivery.EnqueuePending(sess.ClientID, rm.Msg)
+							if err := b.stores.Delivery.EnqueuePending(sess.ClientID, rm.Msg); err == nil {
+								b.recordPendingAdded(sess.ClientID)
+							}
 							return true
 						}
 						pid, err := b.stores.Delivery.ReservePacketID(sess.ClientID)
@@ -540,6 +688,7 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 						if err := b.stores.Delivery.AddInflight(sess.ClientID, pid, rm.Msg); err != nil {
 							return true
 						}
+						b.recordInflightAdded(sess.ClientID, pid)
 						deliveries = append(deliveries, Delivery{Target: sess, Packet: p})
 					}
 				}
@@ -556,6 +705,7 @@ func (b *Broker) HandleSubscribe(c *Conn, pkt *SubscribePacket) (*SubackPacket, 
 func (b *Broker) HandleUnsubscribe(c *Conn, pkt *UnsubscribePacket) (*UnsubackPacket, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.metrics.IncUnsubscribe()
 	sess := c.session
 	if sess == nil {
 		return nil, ErrProtocolError
@@ -588,7 +738,9 @@ func (b *Broker) HandleDisconnect(c *Conn, _ *DisconnectPacket) error {
 	// Clean sessions are removed immediately.
 	if sess.CleanStartAtConnect {
 		b.removeSessionLocked(sess, false)
+		return nil
 	}
+	b.recountSessionMetricsLocked()
 	return nil
 }
 
@@ -609,6 +761,8 @@ func (b *Broker) HandleConnectionLost(c *Conn) error {
 	}
 	if sess.CleanStartAtConnect {
 		b.removeSessionLocked(sess, false)
+		return nil
 	}
+	b.recountSessionMetricsLocked()
 	return nil
 }

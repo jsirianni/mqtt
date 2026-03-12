@@ -12,13 +12,15 @@ type Server struct {
 	logger   *zap.Logger
 	broker   *Broker
 	listener *Listener
+	metrics  MetricsCollector
 }
 
 // New constructs a server from the provided options.
 func New(opts ...Option) (*Server, error) {
 	o := &serverOptions{
-		cfg:    defaultConfig(),
-		logger: zap.NewNop(),
+		cfg:     defaultConfig(),
+		logger:  zap.NewNop(),
+		metrics: NewNoopMetricsCollector(),
 	}
 	for _, opt := range opts {
 		if err := opt(o); err != nil {
@@ -30,13 +32,14 @@ func New(opts ...Option) (*Server, error) {
 	}
 
 	baseLogger := o.logger.Named("server")
-	broker := NewBroker(o.cfg, baseLogger.Named("broker"), o.stores)
-	listener := NewListener(o.cfg.ListenAddr, broker, baseLogger.Named("listener"))
+	broker := NewBroker(o.cfg, baseLogger.Named("broker"), o.stores, o.metrics)
+	listener := NewListener(o.cfg.ListenAddr, broker, baseLogger.Named("listener"), o.metrics)
 	return &Server{
 		cfg:      o.cfg,
 		logger:   baseLogger,
 		broker:   broker,
 		listener: listener,
+		metrics:  o.metrics,
 	}, nil
 }
 
@@ -60,5 +63,8 @@ func (s *Server) Stop(_ context.Context) error {
 	if s.listener == nil {
 		return nil
 	}
-	return s.listener.Close()
+	if err := s.listener.Close(); err != nil {
+		return err
+	}
+	return s.metrics.Shutdown(context.Background())
 }

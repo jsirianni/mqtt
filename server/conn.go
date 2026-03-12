@@ -23,6 +23,7 @@ type Conn struct {
 
 	lastRead  time.Time
 	keepAlive uint16
+	openedAt  time.Time
 }
 
 // NewConn constructs a connection wrapper around a net.Conn.
@@ -33,6 +34,7 @@ func NewConn(netConn net.Conn, broker *Broker, logger *zap.Logger) *Conn {
 		logger:   logger,
 		outbound: make(chan Packet, broker.cfg.MaxOutboundQueue),
 		closed:   make(chan struct{}),
+		openedAt: time.Now(),
 	}
 }
 
@@ -45,6 +47,14 @@ func (c *Conn) closeWithContext(graceful bool, reasonCode byte, sendDisconnect b
 		}
 		_ = reasonCode
 		_ = sendDisconnect
+		mode := "ungraceful"
+		if isTakeover {
+			mode = "takeover"
+		} else if graceful {
+			mode = "graceful"
+		}
+		c.broker.metrics.IncConnectionsClosed(mode)
+		c.broker.metrics.ObserveConnectionDuration(time.Since(c.openedAt))
 		_ = c.netConn.Close()
 	})
 }
@@ -58,14 +68,21 @@ func (c *Conn) Run() {
 func (c *Conn) readLoop() {
 	maxSize := c.broker.cfg.MaxPacketSize
 	for {
-		pkt, _, err := ReadPacket(c.netConn, maxSize)
+		pkt, packetSize, err := ReadPacket(c.netConn, maxSize)
 		if err != nil {
+			c.broker.metrics.IncDecodeError("read_packet", errorReasonLabel(err))
 			c.logger.Warn("connection read failed before/within session",
 				zap.String("remote_addr", c.netConn.RemoteAddr().String()),
 				zap.Error(err),
 			)
 			c.closeWithContext(false, ReasonUnspecifiedError, true, false)
 			return
+		}
+		if packetSize > 0 {
+			c.broker.metrics.ObservePacketSize("in", int64(packetSize))
+		}
+		if inbound, ok := pkt.(Packet); ok {
+			c.broker.metrics.IncPacketsIn(packetTypeLabel(inbound.PacketType()))
 		}
 		if !c.connected {
 			if _, ok := pkt.(*ConnectPacket); !ok {
@@ -83,6 +100,7 @@ func (c *Conn) readLoop() {
 			connack, err := c.broker.HandleConnect(c, p)
 			if err != nil {
 				reason := ReasonCodeFor(err)
+				c.broker.metrics.IncConnectRejection(reason)
 				c.logger.Warn("client connect rejected",
 					zap.String("remote_addr", c.netConn.RemoteAddr().String()),
 					zap.Error(err),
@@ -113,6 +131,7 @@ func (c *Conn) readLoop() {
 					case d.Target.Conn.outbound <- d.Packet:
 					case <-d.Target.Conn.closed:
 					default:
+						c.broker.metrics.IncOutboundQueueDrop("conn_publish_fanout")
 					}
 				}
 			}
@@ -145,6 +164,7 @@ func (c *Conn) readLoop() {
 					case d.Target.Conn.outbound <- d.Packet:
 					case <-d.Target.Conn.closed:
 					default:
+						c.broker.metrics.IncOutboundQueueDrop("conn_subscribe_retained_fanout")
 					}
 				}
 			}
@@ -193,10 +213,26 @@ func (c *Conn) writeLoop() {
 			if c.session != nil {
 				maxSize = c.session.ClientMaxPacketSize
 			}
-			if err := WritePacket(c.netConn, pkt, maxSize); err != nil {
+			cw := &countingWriter{w: c.netConn}
+			packetType := packetTypeLabel(pkt.PacketType())
+			if err := WritePacket(cw, pkt, maxSize); err != nil {
+				c.broker.metrics.IncEncodeError(packetType, errorReasonLabel(err))
 				c.closeWithContext(false, ReasonUnspecifiedError, false, false)
 				return
 			}
+			c.broker.metrics.IncPacketsOut(packetType)
+			c.broker.metrics.ObservePacketSize("out", int64(cw.n))
 		}
 	}
+}
+
+type countingWriter struct {
+	w net.Conn
+	n int
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += n
+	return n, err
 }

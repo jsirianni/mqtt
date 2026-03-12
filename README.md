@@ -21,6 +21,7 @@ go test ./...
 ## Docs
 
 - Configuration: `docs/config.md`
+- Metrics: `docs/metrics.md`
 
 ## Lint and Security
 

@@ -40,6 +40,8 @@ The file format is inferred from extension by Viper (for example: YAML, JSON, TO
 | `server.write_timeout` | `--write-timeout` | `MQTT_SERVER_WRITE_TIMEOUT` | duration | `10s` | Go duration format (`500ms`, `2s`, `1m`). |
 | `server.read_timeout` | `--read-timeout` | `MQTT_SERVER_READ_TIMEOUT` | duration | `0` | `0` means no read timeout. |
 | `server.session_sweep_interval` | `--session-sweep-interval` | `MQTT_SERVER_SESSION_SWEEP_INTERVAL` | duration | `30s` | Interval for session cleanup work. |
+| `metrics.enabled` | `--metrics-enabled` | `MQTT_METRICS_ENABLED` | bool | `true` | Enables Prometheus metrics endpoint. |
+| `metrics.listen_addr` | `--metrics-listen-addr` | `MQTT_METRICS_LISTEN_ADDR` | string | `:9464` | Address where `/metrics` is served. |
 | `log.level` | `--log-level` | `MQTT_LOG_LEVEL` | string | `info` | Supported: `debug`, `info`, `warn`, `error`. Unrecognized values fall back to `info`. |
 | `log.encoding` | `--log-encoding` | `MQTT_LOG_ENCODING` | string | `json` | Currently forced to JSON in code. |
 
@@ -56,7 +58,27 @@ server:
   read_timeout: 0s
   session_sweep_interval: 30s
 
+metrics:
+  enabled: true
+  listen_addr: ":9464"
+
 log:
   level: info
   encoding: json
 ```
+
+## Metrics Endpoint
+
+When enabled, metrics are exposed on:
+
+```bash
+http://<metrics.listen_addr>/metrics
+```
+
+For local defaults:
+
+```bash
+curl http://localhost:9464/metrics
+```
+
+See `docs/metrics.md` for the full metric catalog and label policy.
